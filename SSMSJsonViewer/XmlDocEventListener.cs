@@ -31,6 +31,9 @@ public class XmlDocEventListener : IVsRunningDocTableEvents, IDisposable
       return VSConstants.S_OK;
 
     IntPtr docData = IntPtr.Zero;
+    object dataObject = null;
+    Microsoft.VisualStudio.TextManager.Interop.IVsTextLines textLines = null;
+
     try
     {
       int hr = runningDocumentTable.GetDocumentInfo(
@@ -46,33 +49,34 @@ public class XmlDocEventListener : IVsRunningDocTableEvents, IDisposable
       if (hr != VSConstants.S_OK || string.IsNullOrWhiteSpace(moniker) || !moniker.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
         return VSConstants.S_OK;
 
-      // Get the text buffer
-      var dataObject = System.Runtime.InteropServices.Marshal.GetObjectForIUnknown(docData);
-      var textLines = dataObject as Microsoft.VisualStudio.TextManager.Interop.IVsTextLines;
+      dataObject = System.Runtime.InteropServices.Marshal.GetObjectForIUnknown(docData);
+      textLines = dataObject as Microsoft.VisualStudio.TextManager.Interop.IVsTextLines;
       if (textLines == null)
         return VSConstants.S_OK;
 
-      // Get the text
       textLines.GetLastLineIndex(out int lastLine, out int lastIndex);
       textLines.GetLineText(0, 0, lastLine, lastIndex, out string text);
 
-      // Try to parse as JSON - if it errors out, do nothing
       try
       {
         var parsed = Newtonsoft.Json.Linq.JToken.Parse(text);
         var formatted = parsed.ToString(Newtonsoft.Json.Formatting.Indented);
 
         var dte = (EnvDTE.DTE)Microsoft.VisualStudio.Shell.Package.GetGlobalService(typeof(EnvDTE.DTE));
-        var window = dte.ItemOperations.NewFile("General\\Text File", Path.ChangeExtension(Path.GetFileNameWithoutExtension(moniker),".json"));
-        
-        var textDoc = window.Document.Object("TextDocument") as EnvDTE.TextDocument;
+        if (dte == null)
+          return VSConstants.S_OK;
+
+        var window = dte.ItemOperations.NewFile("General\\Text File", Path.ChangeExtension(Path.GetFileNameWithoutExtension(moniker), ".json"));
+        if (window == null)
+          return VSConstants.S_OK;
+
+        var textDoc = window.Document?.Object("TextDocument") as EnvDTE.TextDocument;
         if (textDoc != null)
         {
           var editPoint = textDoc.StartPoint.CreateEditPoint();
           editPoint.Insert(formatted);
         }
 
-        // Find and close the XML document window
         foreach (EnvDTE.Document document in dte.Documents)
         {
           if (document.FullName.Equals(moniker, StringComparison.OrdinalIgnoreCase))
@@ -81,15 +85,23 @@ public class XmlDocEventListener : IVsRunningDocTableEvents, IDisposable
             break;
           }
         }
-
       }
       catch (Newtonsoft.Json.JsonReaderException)
       {
         // Not valid JSON, do nothing
       }
+      catch (Exception ex)
+      {
+        // Log or handle unexpected exceptions
+        System.Diagnostics.Debug.WriteLine($"Unexpected error: {ex}");
+      }
     }
     finally
     {
+      if (textLines != null)
+        System.Runtime.InteropServices.Marshal.ReleaseComObject(textLines);
+      if (dataObject != null)
+        System.Runtime.InteropServices.Marshal.ReleaseComObject(dataObject);
       if (docData != IntPtr.Zero)
         System.Runtime.InteropServices.Marshal.Release(docData);
     }
